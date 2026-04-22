@@ -46,7 +46,11 @@ class TestSaleReportDeliveredBase(common.TransactionCase):
         cls.orders = cls.order_1 + cls.order_2
         cls.orders.action_confirm()
         cls.orders.picking_ids.action_confirm()
-        cls.orders.picking_ids.move_ids.write({"quantity": 1.0})
+        customer_location = cls.env.ref("stock.stock_location_customers")
+        cls.order_1.picking_ids.write({"location_dest_id": customer_location.id})
+        cls.order_1.picking_ids.move_ids.write(
+            {"location_dest_id": customer_location.id, "quantity": 1.0}
+        )
         cls.orders.picking_ids.button_validate()
 
     def _create_stock_quant(self, product):
@@ -66,6 +70,32 @@ class TestSaleReportDeliveredBase(common.TransactionCase):
             line_form.product_id = product
             line_form.product_uom_qty = 1
         return order_form.save()
+
+    def _get_stock_move(self, order):
+        sale_line = order.order_line.filtered(
+            lambda line: line.product_id == self.product
+        )[:1]
+        return self.env["stock.move"].search(
+            [
+                ("sale_line_id", "=", sale_line.id),
+                ("product_id", "=", self.product.id),
+                ("state", "=", "done"),
+            ],
+            limit=1,
+        )
+
+    def _get_product_sale_line(self, order):
+        return order.order_line.filtered(lambda line: line.product_id == self.product)[
+            :1
+        ]
+
+    def _get_report_items(self, order):
+        return self.env["sale.report.delivered"].search(
+            [
+                ("order_id", "=", order.id),
+                ("product_id", "=", self.product.id),
+            ]
+        )
 
 
 class TestSaleReportDelivered(TestSaleReportDeliveredBase):
@@ -101,3 +131,54 @@ class TestSaleReportDelivered(TestSaleReportDeliveredBase):
     @users("test_user-sale_report_delivered")
     def test_sale_report_delivered_read_group(self):
         self._test_sale_report_delivered_read_group()
+
+    @users("admin")
+    def test_sale_report_delivered_ignores_revaluation_layer_qty(self):
+        move = self._get_stock_move(self.order_1)
+        self.assertTrue(move)
+        self.env["stock.valuation.layer"].create(
+            {
+                "company_id": self.company.id,
+                "product_id": self.product.id,
+                "quantity": 0.0,
+                "value": 1.0,
+                "remaining_qty": 0.0,
+                "remaining_value": 0.0,
+                "description": "Manual revaluation",
+                "stock_move_id": move.id,
+            }
+        )
+        self.env.flush_all()
+        report_item = self._get_report_items(self.order_1)
+        sale_line = self._get_product_sale_line(self.order_1)
+        self.assertEqual(len(report_item), 1)
+        self.assertEqual(report_item.product_uom_qty, 1.0)
+        self.assertEqual(report_item.price_subtotal, sale_line.price_subtotal)
+
+    @users("admin")
+    def test_sale_report_delivered_excludes_zero_quantity_done_moves(self):
+        move = self._get_stock_move(self.order_1)
+        self.assertTrue(move)
+        self.env["stock.move"].create(
+            {
+                "name": move.name,
+                "company_id": move.company_id.id,
+                "product_id": move.product_id.id,
+                "product_uom": move.product_uom.id,
+                "product_uom_qty": 1.0,
+                "quantity": 0.0,
+                "location_id": move.location_id.id,
+                "location_dest_id": move.location_dest_id.id,
+                "picking_id": move.picking_id.id,
+                "sale_line_id": move.sale_line_id.id,
+                "state": "done",
+                "date": "2099-01-01 00:00:00",
+                "picked": True,
+            }
+        )
+        self.env.flush_all()
+        report_item = self._get_report_items(self.order_1)
+        sale_line = self._get_product_sale_line(self.order_1)
+        self.assertEqual(len(report_item), 1)
+        self.assertEqual(report_item.product_uom_qty, 1.0)
+        self.assertEqual(report_item.price_subtotal, sale_line.price_subtotal)

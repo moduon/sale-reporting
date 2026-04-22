@@ -142,7 +142,7 @@ class SaleReportDeliverd(models.Model):
             cur.decimal_places,
             (CASE
                 WHEN t.type in ('product', 'consu')
-                THEN COALESCE(-svl.quantity, sm.quantity, 0.0)
+                THEN ABS(COALESCE(-svl.quantity, sm.quantity, 0.0))
                 ELSE sol.product_uom_qty
             END) / u.factor * u2.factor as unsigned_product_uom_qty,
             CASE
@@ -152,7 +152,7 @@ class SaleReportDeliverd(models.Model):
               ELSE 0
             END AS signed_qty,
             ROUND(
-                COALESCE(
+                ABS(COALESCE(
                     -svl.quantity * (
                         sol.price_unit * (1.0 - sol.discount / 100.0)
                     ),
@@ -160,7 +160,7 @@ class SaleReportDeliverd(models.Model):
                         sol.price_unit * (1.0 - sol.discount / 100.0)
                     ),
                     sol.price_subtotal
-                ) /
+                )) /
                 CASE
                     COALESCE(s.currency_rate, 0)
                     WHEN 0 THEN 1.0
@@ -249,7 +249,9 @@ class SaleReportDeliverd(models.Model):
     def _where(self):
         """Where clause with only done mvoes or without state"""
         return f"""
-            WHERE (sm.state = 'done' OR sm.state IS NULL) AND ({self._sub_where()})
+            WHERE (COALESCE(-svl.quantity, sm.quantity, 0.0) <> 0.0) AND
+                (sm.state = 'done' OR sm.state IS NULL) AND
+                ({self._sub_where()})
         """
 
     def _group_by(self):
